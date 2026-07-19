@@ -1,0 +1,43 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item build/BlenderUIDemo.exe package/
+          if (Test-Path build/SDL3.dll) { Copy-Item build/SDL3.dll package/ }
+          Copy-Item README.md package/
+          Copy-Item LICENSE package/
+          Compress-Archive -Path package/* -DestinationPath BlenderUIDemo-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlenderUIDemo-windows-x64
+          path: BlenderUIDemo-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
