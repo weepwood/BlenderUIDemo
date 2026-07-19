@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/ui-performance-diagnostics]
+    branches: [main, feat/ui-performance-diagnostics, refactor/provider-registry-snapshot-pipeline]
   workflow_dispatch:
 
 permissions:

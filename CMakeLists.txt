@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(BlenderUIDemo VERSION 0.3.0 LANGUAGES CXX)
+project(BlenderUIDemo VERSION 0.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -70,7 +70,21 @@ add_executable(BlenderUIDemo
   src/core/SnapshotStore.cpp
   src/core/TelemetryPipeline.cpp
   src/providers/LegacySystemProvider.cpp
+  src/ui/UiStyleOverride.cpp
 )
+
+# Keep the visual design system out of the large App.cpp implementation. The
+# forced include redirects selected public ImGui calls to small style-aware
+# wrappers without changing the page/business code.
+if(MSVC)
+  set_source_files_properties(src/App.cpp PROPERTIES
+    COMPILE_OPTIONS "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/ui/UiStyleOverride.hpp"
+  )
+else()
+  set_source_files_properties(src/App.cpp PROPERTIES
+    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/ui/UiStyleOverride.hpp"
+  )
+endif()
 
 if(WIN32)
   set_target_properties(BlenderUIDemo PROPERTIES WIN32_EXECUTABLE TRUE)
