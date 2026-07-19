@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -129,12 +130,14 @@ std::string query_user_name() {
 }
 
 std::uint64_t query_total_memory() {
+#if defined(_SC_PHYS_PAGES) && defined(_SC_PAGE_SIZE)
   const long pages = sysconf(_SC_PHYS_PAGES);
   const long page_size = sysconf(_SC_PAGE_SIZE);
-  if (pages <= 0 || page_size <= 0) {
-    return 0;
+  if (pages > 0 && page_size > 0) {
+    return static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(page_size);
   }
-  return static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(page_size);
+#endif
+  return 0;
 }
 
 bool read_proc_cpu(std::uint64_t& idle, std::uint64_t& total) {
@@ -313,7 +316,7 @@ DynamicSystemInfo SystemMonitor::sample() {
     result.uptime_seconds = static_cast<std::uint64_t>(uptime);
   }
 
-  statvfs disk_status{};
+  struct statvfs disk_status {};
   if (statvfs("/", &disk_status) == 0) {
     DiskInfo disk{};
     disk.name = "/";
