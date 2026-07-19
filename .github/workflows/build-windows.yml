@@ -22,7 +22,18 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        shell: pwsh
+        run: |
+          & cmake --build build --config Release --parallel *>&1 |
+            Tee-Object -FilePath build-output.log |
+            Out-Null
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            Write-Host "=== Build error summary ==="
+            Get-Content build-output.log -Tail 180
+            exit $exitCode
+          }
+          Get-Content build-output.log -Tail 30
 
       - name: Package
         shell: pwsh
