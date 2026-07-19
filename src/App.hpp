@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SystemInfo.hpp"
+#include "core/TelemetryPipeline.hpp"
 
 #include <array>
 #include <chrono>
@@ -82,7 +82,7 @@ class App {
   [[nodiscard]] double total_send_rate() const;
   [[nodiscard]] const char* current_page_name() const;
 
-  SystemMonitor monitor_;
+  TelemetryPipeline monitor_;
   DynamicSystemInfo dynamic_info_;
 
   std::array<float, kHistoryCapacity> cpu_history_{};
