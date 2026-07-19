@@ -66,9 +66,15 @@ endif()
 target_include_directories(BlenderUIDemo PRIVATE src)
 target_link_libraries(BlenderUIDemo PRIVATE imgui SDL3::SDL3 OpenGL::GL)
 
-target_compile_definitions(BlenderUIDemo PRIVATE
-  $<$<PLATFORM_ID:Windows>:NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE>
-)
+if(WIN32)
+  target_compile_definitions(BlenderUIDemo PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    UNICODE
+    _UNICODE
+  )
+  target_link_libraries(BlenderUIDemo PRIVATE advapi32 iphlpapi ws2_32)
+endif()
 
 if(MSVC)
   target_compile_options(BlenderUIDemo PRIVATE /W4 /permissive- /utf-8)
@@ -76,15 +82,12 @@ else()
   target_compile_options(BlenderUIDemo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-if(WIN32)
-  target_link_libraries(BlenderUIDemo PRIVATE advapi32 iphlpapi ws2_32)
-endif()
-
 if(TARGET SDL3::SDL3-shared)
   add_custom_command(TARGET BlenderUIDemo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       $<TARGET_FILE:SDL3::SDL3-shared>
       $<TARGET_FILE_DIR:BlenderUIDemo>
+    VERBATIM
   )
 endif()
 
