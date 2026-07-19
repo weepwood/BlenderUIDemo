@@ -22,9 +22,7 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          & cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -Wno-dev *>&1 |
-            Tee-Object -FilePath configure-output.log |
-            Out-Null
+          cmd /d /s /c "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -Wno-dev > configure-output.log 2>&1"
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             Write-Host "=== Configure error summary ==="
@@ -37,9 +35,7 @@ jobs:
         id: compile
         shell: pwsh
         run: |
-          & cmake --build build --config Release --parallel *>&1 |
-            Tee-Object -FilePath build-output.log |
-            Out-Null
+          cmd /d /s /c "cmake --build build --config Release --parallel > build-output.log 2>&1"
           $exitCode = $LASTEXITCODE
           "exit_code=$exitCode" >> $env:GITHUB_OUTPUT
           if ($exitCode -ne 0) {
