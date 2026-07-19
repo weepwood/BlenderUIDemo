@@ -11,8 +11,19 @@
 - 顶部菜单栏、分组式左侧导航、中央 Editor、右侧 Properties 和底部状态栏
 - 深灰中性色、橙色强调线、高信息密度表格与紧凑指标卡
 - 三栏宽度可拖动调整
-- Overview、Performance、Hardware、Storage、Network、Processes、Diagnostics 七个工作区
-- 性能策略可直接在右侧 Properties 中调整
+- 概览、性能、硬件、存储、网络、进程、诊断七个工作区
+- 性能、语言和界面缩放策略可直接在右侧 Properties 中调整
+
+### 中文与高 DPI
+
+- 默认使用简体中文，可从顶部“语言”菜单或右侧 Properties 切换为 English
+- 中文覆盖菜单、导航、页面标题、指标卡、表格、诊断原因、设置和关于窗口
+- Windows 下自动从系统字体目录加载微软雅黑、黑体、宋体等可用中文字体，不在仓库或发布包中附带字体文件
+- 启用 Windows Per-Monitor V2 DPI awareness，并读取 SDL3 的窗口显示缩放比例
+- 窗口移动到不同缩放比例的显示器时，自动重建 Dear ImGui 字体图集和控件尺寸
+- 支持在系统缩放基础上额外调节 `0.80x`—`1.80x` UI 比例
+- 状态栏与 Properties 会显示显示器 DPI、最终 UI 缩放和当前字体来源
+- 若系统没有可识别的中文字体，界面会显示明确提示，而不是静默失败
 
 ### 系统与硬件
 
@@ -39,6 +50,38 @@
 - CPU 高占用原因的动态判断
 - 快速采集与慢速采集的耗时拆分
 - 在 Diagnostics 页面展示已经采用的优化措施
+- 高 DPI 帧缓冲区导致 GPU 绘制成本上升时给出对应诊断
+
+## 中文和缩放使用
+
+程序首次运行默认显示简体中文。
+
+### 切换语言
+
+可以通过以下任一位置切换：
+
+1. 顶部菜单：`语言 → 简体中文 / English`
+2. 右侧属性栏：`界面与语言 → 界面语言`
+
+切换即时生效，不需要重新启动程序。
+
+### 调整界面大小
+
+程序会先读取 Windows 当前显示器的缩放比例，再乘以用户设置的额外 UI 比例：
+
+```text
+最终 UI 缩放 = 显示器缩放 × 额外界面缩放
+```
+
+例如 Windows 显示缩放为 `150%`，额外界面缩放为 `1.20x`，最终 UI 缩放约为 `180%`。
+
+在右侧 Properties 的“界面与语言”区域：
+
+1. 拖动“额外界面缩放”滑块，可选 `0.80x`—`1.80x`。
+2. 点击“应用界面缩放”。
+3. 点击“重置”可恢复 `1.00x`。
+
+窗口跨显示器移动或显示器 DPI 发生变化时，程序会自动重新加载对应字号的字体并调整控件尺寸。
 
 ## CPU 占用优化
 
@@ -60,6 +103,7 @@
 - 磁盘与进程清单默认每 5000ms 采集并缓存
 - 图表改用固定大小环形缓冲区，避免逐帧分配与复制
 - 在 Diagnostics 中显示各模块真实耗时，而不是凭经验猜测
+- 高 DPI 模式下单独提示更大帧缓冲区可能带来的 GPU 开销
 
 详细说明见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
 
@@ -68,9 +112,11 @@
 | 模块 | 技术 |
 |---|---|
 | 应用核心 | C++20 |
-| 窗口、输入、帧控制 | SDL 3.4.8 |
+| 窗口、输入、帧控制与 DPI | SDL 3.4.8 |
 | UI | Dear ImGui 1.91.9 Docking |
 | 图形后端 | OpenGL 3.3 |
+| 中文字体 | Windows 系统字体运行时发现 |
+| Windows DPI | Per-Monitor V2 |
 | 系统信息 | Win32 API |
 | GPU 信息 | DXGI |
 | 网络信息 | IP Helper API |
@@ -163,6 +209,7 @@ Windows
 SDL3 event loop ──► Runtime telemetry
   │                    │
   ├── frame policy     │
+  ├── DPI / language   │
   ├── module profiler  │
   ▼                    ▼
 Dear ImGui UI ─────► Diagnostics workspace
@@ -187,7 +234,7 @@ OpenGL renderer
 
 - Windows 服务与启动项视图
 - GPU 实时使用率与显存使用量
-- 可保存的布局、主题和性能策略
+- 保存语言、布局、主题、缩放和性能策略
 - Operator/Command 命令注册机制
 - 可选 LibreHardwareMonitor 传感器桥接
 - ETW 高精度进程 CPU、磁盘和网络分析
