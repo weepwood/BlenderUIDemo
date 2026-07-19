@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -12,7 +13,13 @@
 #include <utility>
 
 #ifdef _WIN32
+#include <winsock2.h>
 #include <windows.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <dxgi1_2.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 #include <winternl.h>
 #else
 #include <sys/statvfs.h>
@@ -23,6 +30,12 @@
 namespace blender_ui_demo {
 namespace {
 
+using Clock = std::chrono::steady_clock;
+
+[[nodiscard]] double elapsed_ms(const Clock::time_point start, const Clock::time_point end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 #ifdef _WIN32
 
 std::uint64_t file_time_to_u64(const FILETIME& value) {
@@ -30,6 +43,11 @@ std::uint64_t file_time_to_u64(const FILETIME& value) {
   integer.LowPart = value.dwLowDateTime;
   integer.HighPart = value.dwHighDateTime;
   return integer.QuadPart;
+}
+
+std::uint64_t counter_delta_32(const std::uint64_t current, const std::uint64_t previous) {
+  constexpr std::uint64_t modulus = 1ULL << 32U;
+  return current >= previous ? current - previous : modulus - previous + current;
 }
 
 std::string to_utf8(std::wstring_view value) {
@@ -80,17 +98,18 @@ std::string query_cpu_name() {
                                    nullptr,
                                    buffer.data(),
                                    &size);
-  if (status != ERROR_SUCCESS) {
-    return "Unknown processor";
-  }
-  return to_utf8(buffer.data());
+  return status == ERROR_SUCCESS ? to_utf8(buffer.data()) : "Unknown processor";
 }
 
 std::string query_windows_version() {
   using RtlGetVersionFunction = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
-  const auto module = GetModuleHandleW(L"ntdll.dll");
-  const auto rtl_get_version = reinterpret_cast<RtlGetVersionFunction>(
-      module != nullptr ? GetProcAddress(module, "RtlGetVersion") : nullptr);
+  const HMODULE module = GetModuleHandleW(L"ntdll.dll");
+  RtlGetVersionFunction rtl_get_version = nullptr;
+  if (module != nullptr) {
+    const FARPROC address = GetProcAddress(module, "RtlGetVersion");
+    static_assert(sizeof(address) == sizeof(rtl_get_version));
+    std::memcpy(&rtl_get_version, &address, sizeof(address));
+  }
 
   RTL_OSVERSIONINFOW info{};
   info.dwOSVersionInfoSize = sizeof(info);
@@ -115,6 +134,167 @@ std::string query_architecture(WORD architecture) {
     default:
       return "Unknown";
   }
+}
+
+std::pair<std::string, std::uint64_t> query_gpu() {
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    return {"Unavailable", 0};
+  }
+
+  std::string best_name = "Unavailable";
+  std::uint64_t best_memory = 0;
+  for (UINT index = 0;; ++index) {
+    IDXGIAdapter1* adapter = nullptr;
+    if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND) {
+      break;
+    }
+    if (adapter == nullptr) {
+      continue;
+    }
+
+    DXGI_ADAPTER_DESC1 description{};
+    if (SUCCEEDED(adapter->GetDesc1(&description)) &&
+        (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+        description.DedicatedVideoMemory >= best_memory) {
+      best_name = to_utf8(description.Description);
+      best_memory = static_cast<std::uint64_t>(description.DedicatedVideoMemory);
+    }
+    adapter->Release();
+  }
+  factory->Release();
+  return {best_name, best_memory};
+}
+
+std::vector<DiskInfo> query_disks() {
+  std::vector<DiskInfo> disks;
+  const DWORD drive_mask = GetLogicalDrives();
+  for (int index = 0; index < 26; ++index) {
+    if ((drive_mask & (1UL << index)) == 0) {
+      continue;
+    }
+
+    wchar_t root[] = L"A:\\";
+    root[0] = static_cast<wchar_t>(L'A' + index);
+    const UINT type = GetDriveTypeW(root);
+    if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE) {
+      continue;
+    }
+
+    ULARGE_INTEGER available{};
+    ULARGE_INTEGER total{};
+    ULARGE_INTEGER free{};
+    if (!GetDiskFreeSpaceExW(root, &available, &total, &free)) {
+      continue;
+    }
+
+    std::array<wchar_t, 64> file_system{};
+    GetVolumeInformationW(root,
+                          nullptr,
+                          0,
+                          nullptr,
+                          nullptr,
+                          nullptr,
+                          file_system.data(),
+                          static_cast<DWORD>(file_system.size()));
+
+    DiskInfo disk{};
+    disk.name = to_utf8(root);
+    disk.file_system = file_system[0] != L'\0' ? to_utf8(file_system.data()) : "Unknown";
+    disk.total_bytes = total.QuadPart;
+    disk.free_bytes = free.QuadPart;
+    disks.push_back(std::move(disk));
+  }
+  return disks;
+}
+
+std::unordered_map<ULONG, std::string> query_ipv4_addresses() {
+  std::unordered_map<ULONG, std::string> addresses;
+  ULONG buffer_size = 16 * 1024;
+  std::vector<unsigned char> buffer(buffer_size);
+  auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+  ULONG status = GetAdaptersAddresses(AF_INET,
+                                      GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                          GAA_FLAG_SKIP_DNS_SERVER,
+                                      nullptr,
+                                      adapters,
+                                      &buffer_size);
+  if (status == ERROR_BUFFER_OVERFLOW) {
+    buffer.resize(buffer_size);
+    adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    status = GetAdaptersAddresses(AF_INET,
+                                  GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                      GAA_FLAG_SKIP_DNS_SERVER,
+                                  nullptr,
+                                  adapters,
+                                  &buffer_size);
+  }
+  if (status != NO_ERROR) {
+    return addresses;
+  }
+
+  for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+    for (auto* address = adapter->FirstUnicastAddress; address != nullptr; address = address->Next) {
+      if (address->Address.lpSockaddr == nullptr ||
+          address->Address.lpSockaddr->sa_family != AF_INET) {
+        continue;
+      }
+      const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->Address.lpSockaddr);
+      std::array<char, INET_ADDRSTRLEN> text{};
+      if (InetNtopA(AF_INET,
+                    &ipv4->sin_addr,
+                    text.data(),
+                    static_cast<DWORD>(text.size())) != nullptr) {
+        addresses[static_cast<ULONG>(adapter->IfIndex)] = std::string(text.data());
+        break;
+      }
+    }
+  }
+  return addresses;
+}
+
+std::pair<std::vector<ProcessInfo>, std::size_t> query_processes() {
+  std::vector<ProcessInfo> processes;
+  std::size_t process_count = 0;
+  const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) {
+    return {processes, process_count};
+  }
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      ++process_count;
+      PROCESS_MEMORY_COUNTERS_EX memory{};
+      memory.cb = sizeof(memory);
+      const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                                         FALSE,
+                                         entry.th32ProcessID);
+      if (process != nullptr) {
+        if (GetProcessMemoryInfo(process,
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
+                                 sizeof(memory))) {
+          ProcessInfo info{};
+          info.process_id = entry.th32ProcessID;
+          info.name = to_utf8(entry.szExeFile);
+          info.thread_count = entry.cntThreads;
+          info.working_set_bytes = static_cast<std::uint64_t>(memory.WorkingSetSize);
+          processes.push_back(std::move(info));
+        }
+        CloseHandle(process);
+      }
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+
+  std::sort(processes.begin(), processes.end(), [](const ProcessInfo& left, const ProcessInfo& right) {
+    return left.working_set_bytes > right.working_set_bytes;
+  });
+  if (processes.size() > 15) {
+    processes.resize(15);
+  }
+  return {processes, process_count};
 }
 
 #else
@@ -179,6 +359,9 @@ SystemMonitor::SystemMonitor() {
   static_info_.cpu_name = query_cpu_name();
   static_info_.logical_processors = system_info.dwNumberOfProcessors;
   static_info_.total_memory_bytes = memory.ullTotalPhys;
+  const auto [gpu_name, gpu_memory] = query_gpu();
+  static_info_.gpu_name = gpu_name;
+  static_info_.gpu_dedicated_memory_bytes = gpu_memory;
 
   FILETIME idle{};
   FILETIME kernel{};
@@ -188,6 +371,17 @@ SystemMonitor::SystemMonitor() {
     previous_kernel_ = file_time_to_u64(kernel);
     previous_user_ = file_time_to_u64(user);
   }
+
+  FILETIME creation{};
+  FILETIME exit{};
+  FILETIME process_kernel{};
+  FILETIME process_user{};
+  if (GetProcessTimes(GetCurrentProcess(), &creation, &exit, &process_kernel, &process_user)) {
+    previous_process_kernel_ = file_time_to_u64(process_kernel);
+    previous_process_user_ = file_time_to_u64(process_user);
+  }
+  previous_process_sample_ = Clock::now();
+  previous_network_sample_ = Clock::now();
 #else
   utsname system_name{};
   uname(&system_name);
@@ -197,6 +391,7 @@ SystemMonitor::SystemMonitor() {
   static_info_.operating_system = std::string(system_name.sysname) + " " + system_name.release;
   static_info_.architecture = system_name.machine;
   static_info_.cpu_name = "System processor";
+  static_info_.gpu_name = "Unavailable";
   static_info_.logical_processors = std::max(1u, std::thread::hardware_concurrency());
   static_info_.total_memory_bytes = query_total_memory();
   read_proc_cpu(previous_idle_, previous_total_);
@@ -207,10 +402,12 @@ const StaticSystemInfo& SystemMonitor::static_info() const noexcept {
   return static_info_;
 }
 
-DynamicSystemInfo SystemMonitor::sample() {
+DynamicSystemInfo SystemMonitor::sample(bool refresh_slow_data) {
+  const auto sample_start = Clock::now();
   DynamicSystemInfo result{};
 
 #ifdef _WIN32
+  const auto cpu_memory_start = Clock::now();
   FILETIME idle{};
   FILETIME kernel{};
   FILETIME user{};
@@ -220,7 +417,7 @@ DynamicSystemInfo SystemMonitor::sample() {
     const std::uint64_t user_now = file_time_to_u64(user);
     const std::uint64_t idle_delta = idle_now - previous_idle_;
     const std::uint64_t total_delta = (kernel_now - previous_kernel_) + (user_now - previous_user_);
-    if (total_delta > 0) {
+    if (total_delta > 0 && total_delta >= idle_delta) {
       result.cpu_usage_percent = 100.0 * static_cast<double>(total_delta - idle_delta) /
                                  static_cast<double>(total_delta);
     }
@@ -236,53 +433,125 @@ DynamicSystemInfo SystemMonitor::sample() {
     result.used_memory_bytes = memory.ullTotalPhys - memory.ullAvailPhys;
     result.memory_usage_percent = static_cast<double>(memory.dwMemoryLoad);
   }
-
   result.uptime_seconds = GetTickCount64() / 1000ULL;
 
-  const DWORD drive_mask = GetLogicalDrives();
-  for (int index = 0; index < 26; ++index) {
-    if ((drive_mask & (1UL << index)) == 0) {
-      continue;
+  const auto process_sample_now = Clock::now();
+  FILETIME creation{};
+  FILETIME exit{};
+  FILETIME process_kernel{};
+  FILETIME process_user{};
+  if (GetProcessTimes(GetCurrentProcess(), &creation, &exit, &process_kernel, &process_user)) {
+    const std::uint64_t kernel_now = file_time_to_u64(process_kernel);
+    const std::uint64_t user_now = file_time_to_u64(process_user);
+    const std::uint64_t process_delta = (kernel_now - previous_process_kernel_) +
+                                        (user_now - previous_process_user_);
+    const double seconds = std::chrono::duration<double>(process_sample_now - previous_process_sample_).count();
+    if (seconds > 0.0 && static_info_.logical_processors > 0) {
+      result.application_cpu_percent =
+          100.0 * static_cast<double>(process_delta) /
+          (seconds * 10'000'000.0 * static_cast<double>(static_info_.logical_processors));
     }
+    previous_process_kernel_ = kernel_now;
+    previous_process_user_ = user_now;
+    previous_process_sample_ = process_sample_now;
+  }
 
-    wchar_t root[] = L"A:\\";
-    root[0] = static_cast<wchar_t>(L'A' + index);
-    const UINT type = GetDriveTypeW(root);
-    if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE) {
-      continue;
+  PROCESS_MEMORY_COUNTERS_EX process_memory{};
+  process_memory.cb = sizeof(process_memory);
+  if (GetProcessMemoryInfo(GetCurrentProcess(),
+                           reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&process_memory),
+                           sizeof(process_memory))) {
+    result.application_working_set_bytes = static_cast<std::uint64_t>(process_memory.WorkingSetSize);
+    result.application_private_bytes = static_cast<std::uint64_t>(process_memory.PrivateUsage);
+  }
+  const auto cpu_memory_end = Clock::now();
+  result.collector_timings.cpu_memory_ms = elapsed_ms(cpu_memory_start, cpu_memory_end);
+
+  const auto network_start = Clock::now();
+  const auto ipv4_addresses = query_ipv4_addresses();
+  const auto network_now = Clock::now();
+  const double network_seconds =
+      std::chrono::duration<double>(network_now - previous_network_sample_).count();
+
+  ULONG table_size = 0;
+  if (GetIfTable(nullptr, &table_size, FALSE) == ERROR_INSUFFICIENT_BUFFER && table_size > 0) {
+    std::vector<unsigned char> table_buffer(table_size);
+    auto* interface_table = reinterpret_cast<MIB_IFTABLE*>(table_buffer.data());
+    if (GetIfTable(interface_table, &table_size, FALSE) == NO_ERROR) {
+      result.network_adapters.reserve(interface_table->dwNumEntries);
+      for (DWORD index = 0; index < interface_table->dwNumEntries; ++index) {
+        const MIB_IFROW& row = interface_table->table[index];
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
+          continue;
+        }
+
+        NetworkAdapterInfo adapter{};
+        adapter.name = to_utf8(row.wszName);
+        const std::size_t description_length =
+            std::min<std::size_t>(static_cast<std::size_t>(row.dwDescrLen), sizeof(row.bDescr));
+        adapter.description.assign(reinterpret_cast<const char*>(row.bDescr), description_length);
+        while (!adapter.description.empty() && adapter.description.back() == '\0') {
+          adapter.description.pop_back();
+        }
+        adapter.connected = row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL;
+        adapter.received_bytes = static_cast<std::uint64_t>(row.dwInOctets);
+        adapter.sent_bytes = static_cast<std::uint64_t>(row.dwOutOctets);
+
+        const auto address = ipv4_addresses.find(row.dwIndex);
+        if (address != ipv4_addresses.end()) {
+          adapter.ipv4_address = address->second;
+        }
+
+        const std::uint64_t key = static_cast<std::uint64_t>(row.dwIndex);
+        const auto previous = previous_network_counters_.find(key);
+        if (previous != previous_network_counters_.end() && network_seconds > 0.0) {
+          adapter.receive_bytes_per_second =
+              static_cast<double>(counter_delta_32(adapter.received_bytes,
+                                                   previous->second.received_bytes)) /
+              network_seconds;
+          adapter.send_bytes_per_second =
+              static_cast<double>(counter_delta_32(adapter.sent_bytes,
+                                                   previous->second.sent_bytes)) /
+              network_seconds;
+        }
+        previous_network_counters_[key] = {adapter.received_bytes, adapter.sent_bytes};
+        result.network_adapters.push_back(std::move(adapter));
+      }
     }
+  }
 
-    ULARGE_INTEGER available{};
-    ULARGE_INTEGER total{};
-    ULARGE_INTEGER free{};
-    if (!GetDiskFreeSpaceExW(root, &available, &total, &free)) {
-      continue;
-    }
+  previous_network_sample_ = network_now;
+  std::sort(result.network_adapters.begin(),
+            result.network_adapters.end(),
+            [](const NetworkAdapterInfo& left, const NetworkAdapterInfo& right) {
+              if (left.connected != right.connected) {
+                return left.connected > right.connected;
+              }
+              return left.receive_bytes_per_second + left.send_bytes_per_second >
+                     right.receive_bytes_per_second + right.send_bytes_per_second;
+            });
+  result.collector_timings.network_ms = elapsed_ms(network_start, Clock::now());
 
-    std::array<wchar_t, 64> file_system{};
-    GetVolumeInformationW(root,
-                          nullptr,
-                          0,
-                          nullptr,
-                          nullptr,
-                          nullptr,
-                          file_system.data(),
-                          static_cast<DWORD>(file_system.size()));
+  if (refresh_slow_data || cached_disks_.empty()) {
+    result.collector_timings.slow_refresh_performed = true;
+    const auto storage_start = Clock::now();
+    cached_disks_ = query_disks();
+    result.collector_timings.storage_ms = elapsed_ms(storage_start, Clock::now());
 
-    DiskInfo disk{};
-    disk.name = to_utf8(root);
-    disk.file_system = file_system[0] != L'\0' ? to_utf8(file_system.data()) : "Unknown";
-    disk.total_bytes = total.QuadPart;
-    disk.free_bytes = free.QuadPart;
-    result.disks.push_back(std::move(disk));
+    const auto processes_start = Clock::now();
+    auto [processes, process_count] = query_processes();
+    cached_processes_ = std::move(processes);
+    cached_process_count_ = process_count;
+    result.collector_timings.processes_ms = elapsed_ms(processes_start, Clock::now());
   }
 #else
+  const auto cpu_memory_start = Clock::now();
   std::uint64_t idle_now = 0;
   std::uint64_t total_now = 0;
   if (read_proc_cpu(idle_now, total_now)) {
     const std::uint64_t idle_delta = idle_now - previous_idle_;
     const std::uint64_t total_delta = total_now - previous_total_;
-    if (total_delta > 0) {
+    if (total_delta > 0 && total_delta >= idle_delta) {
       result.cpu_usage_percent = 100.0 * static_cast<double>(total_delta - idle_delta) /
                                  static_cast<double>(total_delta);
     }
@@ -315,20 +584,31 @@ DynamicSystemInfo SystemMonitor::sample() {
   if (uptime_file >> uptime) {
     result.uptime_seconds = static_cast<std::uint64_t>(uptime);
   }
+  result.collector_timings.cpu_memory_ms = elapsed_ms(cpu_memory_start, Clock::now());
 
-  struct statvfs disk_status {};
-  if (statvfs("/", &disk_status) == 0) {
-    DiskInfo disk{};
-    disk.name = "/";
-    disk.file_system = "System";
-    disk.total_bytes = static_cast<std::uint64_t>(disk_status.f_blocks) * disk_status.f_frsize;
-    disk.free_bytes = static_cast<std::uint64_t>(disk_status.f_bavail) * disk_status.f_frsize;
-    result.disks.push_back(std::move(disk));
+  if (refresh_slow_data || cached_disks_.empty()) {
+    result.collector_timings.slow_refresh_performed = true;
+    const auto storage_start = Clock::now();
+    struct statvfs disk_status {};
+    if (statvfs("/", &disk_status) == 0) {
+      DiskInfo disk{};
+      disk.name = "/";
+      disk.file_system = "System";
+      disk.total_bytes = static_cast<std::uint64_t>(disk_status.f_blocks) * disk_status.f_frsize;
+      disk.free_bytes = static_cast<std::uint64_t>(disk_status.f_bavail) * disk_status.f_frsize;
+      cached_disks_ = {disk};
+    }
+    result.collector_timings.storage_ms = elapsed_ms(storage_start, Clock::now());
   }
 #endif
 
+  result.disks = cached_disks_;
+  result.top_processes = cached_processes_;
+  result.process_count = cached_process_count_;
   result.cpu_usage_percent = std::clamp(result.cpu_usage_percent, 0.0, 100.0);
   result.memory_usage_percent = std::clamp(result.memory_usage_percent, 0.0, 100.0);
+  result.application_cpu_percent = std::clamp(result.application_cpu_percent, 0.0, 100.0);
+  result.collector_timings.total_ms = elapsed_ms(sample_start, Clock::now());
   return result;
 }
 
@@ -357,8 +637,15 @@ std::string format_duration(std::uint64_t seconds) {
   if (days > 0) {
     stream << days << "d ";
   }
-  stream << hours << "h " << minutes << "m";
+  stream << std::setfill('0') << std::setw(2) << hours << ':' << std::setw(2) << minutes;
   return stream.str();
+}
+
+std::string format_rate(double bytes_per_second) {
+  if (bytes_per_second < 0.0) {
+    bytes_per_second = 0.0;
+  }
+  return format_bytes(static_cast<std::uint64_t>(bytes_per_second)) + "/s";
 }
 
 }  // namespace blender_ui_demo
