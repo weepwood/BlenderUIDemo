@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cstddef>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace blender_ui_demo {
@@ -26,6 +25,11 @@ class App {
     Diagnostics,
   };
 
+  enum class Language {
+    SimplifiedChinese,
+    English,
+  };
+
   enum class ModuleSlot : std::size_t {
     Events,
     Sampling,
@@ -37,8 +41,10 @@ class App {
   };
 
   struct ModuleStat {
-    std::string name;
-    std::string description;
+    const char* name_zh = "";
+    const char* name_en = "";
+    const char* description_zh = "";
+    const char* description_en = "";
     double last_ms = 0.0;
     double average_ms = 0.0;
     double budget_ms = 0.0;
@@ -47,6 +53,7 @@ class App {
   static constexpr std::size_t kHistoryCapacity = 120;
 
   void apply_blender_theme();
+  void rebuild_ui_scale(bool recreate_font_texture);
   void initialize_modules();
   void record_module(ModuleSlot slot, double milliseconds);
   void update_metrics(bool force = false);
@@ -68,6 +75,8 @@ class App {
   void draw_status_bar();
   void draw_about_dialog();
 
+  [[nodiscard]] const char* text(const char* chinese, const char* english) const noexcept;
+  [[nodiscard]] bool is_chinese() const noexcept;
   [[nodiscard]] std::vector<std::string> diagnose_cpu_usage() const;
   [[nodiscard]] double total_receive_rate() const;
   [[nodiscard]] double total_send_rate() const;
@@ -89,6 +98,7 @@ class App {
   std::chrono::steady_clock::time_point last_slow_sample_{};
 
   Page page_ = Page::Overview;
+  Language language_ = Language::SimplifiedChinese;
   bool request_exit_ = false;
   bool show_about_ = false;
   bool show_imgui_demo_ = false;
@@ -96,12 +106,20 @@ class App {
   bool vsync_active_ = false;
   bool window_focused_ = true;
   bool window_minimized_ = false;
+  bool pending_ui_rebuild_ = false;
+  bool cjk_font_loaded_ = false;
 
   int target_fps_ = 30;
   int sampling_interval_ms_ = 1000;
   int slow_refresh_interval_ms_ = 5000;
   double current_fps_ = 0.0;
   double current_frame_ms_ = 0.0;
+
+  float system_scale_ = 1.0F;
+  float user_scale_ = 1.0F;
+  float requested_user_scale_ = 1.0F;
+  float effective_scale_ = 1.0F;
+  std::string font_source_ = "Dear ImGui default";
 };
 
 }  // namespace blender_ui_demo
