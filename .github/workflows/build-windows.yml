@@ -19,11 +19,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure
         shell: pwsh
         run: |
+          $arguments = @(
+            '-S', '.',
+            '-B', 'build',
+            '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DCMAKE_C_COMPILER=cl',
+            '-DCMAKE_CXX_COMPILER=cl',
+            '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
+            '-Wno-dev'
+          )
           $process = Start-Process -FilePath cmake `
-            -ArgumentList @('-S', '.', '-B', 'build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-Wno-dev') `
+            -ArgumentList $arguments `
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput configure-output.log `
             -RedirectStandardError configure-error.log
@@ -32,6 +47,12 @@ jobs:
             if (Test-Path configure-output.log) { Get-Content configure-output.log -Tail 40 }
             if (Test-Path configure-error.log) { Get-Content configure-error.log -Tail 40 }
             exit $process.ExitCode
+          }
+
+          $cache = Get-Content build/CMakeCache.txt -Raw
+          if ($cache -notmatch 'CMAKE_CXX_COMPILER:FILEPATH=.*cl\.exe') {
+            Write-Error 'The Windows build did not select the MSVC compiler.'
+            exit 1
           }
           Get-Content configure-output.log -Tail 10
 
@@ -94,13 +115,43 @@ jobs:
         shell: pwsh
         run: exit 1
 
+      - name: Verify runtime dependencies
+        if: steps.compile.outputs.exit_code == '0'
+        shell: pwsh
+        run: |
+          $targets = @('build/BlenderUIDemo.exe', 'build/SDL3.dll')
+          $forbidden = @(
+            'libgcc_s_seh-1.dll',
+            'libstdc++-6.dll',
+            'libwinpthread-1.dll',
+            'VCRUNTIME140.dll',
+            'VCRUNTIME140_1.dll',
+            'MSVCP140.dll'
+          )
+
+          foreach ($target in $targets) {
+            if (-not (Test-Path $target)) {
+              Write-Error "Missing build output: $target"
+              exit 1
+            }
+            $dependencies = (& dumpbin /dependents $target | Out-String)
+            Write-Host "=== Dependencies: $target ==="
+            Write-Host $dependencies
+            foreach ($library in $forbidden) {
+              if ($dependencies -match [regex]::Escape($library)) {
+                Write-Error "$target unexpectedly depends on $library"
+                exit 1
+              }
+            }
+          }
+
       - name: Package
         if: steps.compile.outputs.exit_code == '0'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item build/BlenderUIDemo.exe package/
-          if (Test-Path build/SDL3.dll) { Copy-Item build/SDL3.dll package/ }
+          Copy-Item build/SDL3.dll package/
           Copy-Item README.md package/
           Copy-Item LICENSE package/
           Compress-Archive -Path package/* -DestinationPath BlenderUIDemo-windows-x64.zip -Force
