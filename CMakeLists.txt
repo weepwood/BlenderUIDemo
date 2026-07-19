@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(BlenderUIDemo VERSION 0.1.0 LANGUAGES CXX)
+project(BlenderUIDemo VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,7 +82,13 @@ if(WIN32)
     WINVER=0x0A00
     _WIN32_WINNT=0x0A00
   )
-  target_link_libraries(BlenderUIDemo PRIVATE advapi32 iphlpapi ws2_32)
+  target_link_libraries(BlenderUIDemo PRIVATE
+    advapi32
+    dxgi
+    iphlpapi
+    psapi
+    ws2_32
+  )
 endif()
 
 if(MSVC)
