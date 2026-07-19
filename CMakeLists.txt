@@ -7,6 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Keep the Windows package self-contained. When built with MSVC this selects
+# the static C/C++ runtime (/MT for Release, /MTd for Debug), so end users do
+# not need a separate Visual C++ Redistributable installation.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+endif()
+
 include(FetchContent)
 
 set(SDL_SHARED ON CACHE BOOL "" FORCE)
