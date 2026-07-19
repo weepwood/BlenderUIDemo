@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(BlenderUIDemo VERSION 0.2.0 LANGUAGES CXX)
+project(BlenderUIDemo VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,7 @@ if(NOT imgui_POPULATED)
 endif()
 
 find_package(OpenGL REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
@@ -64,6 +65,11 @@ add_executable(BlenderUIDemo
   src/main.cpp
   src/App.cpp
   src/SystemInfo.cpp
+  src/core/Provider.cpp
+  src/core/ProviderRegistry.cpp
+  src/core/SnapshotStore.cpp
+  src/core/TelemetryPipeline.cpp
+  src/providers/LegacySystemProvider.cpp
 )
 
 if(WIN32)
@@ -71,7 +77,7 @@ if(WIN32)
 endif()
 
 target_include_directories(BlenderUIDemo PRIVATE src)
-target_link_libraries(BlenderUIDemo PRIVATE imgui SDL3::SDL3 OpenGL::GL)
+target_link_libraries(BlenderUIDemo PRIVATE imgui SDL3::SDL3 OpenGL::GL Threads::Threads)
 
 if(WIN32)
   target_compile_definitions(BlenderUIDemo PRIVATE
