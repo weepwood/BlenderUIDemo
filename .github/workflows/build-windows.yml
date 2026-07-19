@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   build:
@@ -33,20 +34,61 @@ jobs:
           Get-Content configure-output.log -Tail 10
 
       - name: Build
+        id: compile
         shell: pwsh
         run: |
           & cmake --build build --config Release --parallel *>&1 |
             Tee-Object -FilePath build-output.log |
             Out-Null
           $exitCode = $LASTEXITCODE
+          "exit_code=$exitCode" >> $env:GITHUB_OUTPUT
           if ($exitCode -ne 0) {
-            Write-Host "=== Build error summary ==="
-            Get-Content build-output.log -Tail 80
-            exit $exitCode
+            Get-Content build-output.log -Tail 80 | Set-Content build-error.txt
+            Write-Host "Build failed; a concise diagnostic will be posted to the pull request."
+          } else {
+            Get-Content build-output.log -Tail 20
           }
-          Get-Content build-output.log -Tail 20
+
+      - name: Report compiler error
+        if: steps.compile.outputs.exit_code != '0' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- blender-ui-demo-build-error -->';
+            const details = fs.readFileSync('build-error.txt', 'utf8').replaceAll('```', '` ` `');
+            const body = `${marker}\n### Windows 构建错误摘要\n\n\`\`\`text\n${details}\n\`\`\``;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }
+
+      - name: Fail on compiler error
+        if: steps.compile.outputs.exit_code != '0'
+        shell: pwsh
+        run: exit 1
 
       - name: Package
+        if: steps.compile.outputs.exit_code == '0'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path package | Out-Null
@@ -57,6 +99,7 @@ jobs:
           Compress-Archive -Path package/* -DestinationPath BlenderUIDemo-windows-x64.zip -Force
 
       - name: Upload artifact
+        if: steps.compile.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: BlenderUIDemo-windows-x64
