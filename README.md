@@ -23,7 +23,7 @@
 |---|---|
 | 应用核心 | C++20 |
 | 窗口与输入 | SDL 3.4.8 |
-| UI | Dear ImGui 1.92.8 |
+| UI | Dear ImGui 1.91.9 |
 | 图形后端 | OpenGL 3.3 |
 | Windows 数据 | Win32 API |
 | 构建系统 | CMake 3.24+ |
