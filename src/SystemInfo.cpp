@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -12,13 +13,14 @@
 #include <utility>
 
 #ifdef _WIN32
-#include <dxgi1_2.h>
+#include <winsock2.h>
+#include <windows.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <dxgi1_2.h>
 #include <psapi.h>
 #include <tlhelp32.h>
-#include <windows.h>
 #include <winternl.h>
-#include <ws2tcpip.h>
 #else
 #include <sys/statvfs.h>
 #include <sys/utsname.h>
@@ -41,6 +43,11 @@ std::uint64_t file_time_to_u64(const FILETIME& value) {
   integer.LowPart = value.dwLowDateTime;
   integer.HighPart = value.dwHighDateTime;
   return integer.QuadPart;
+}
+
+std::uint64_t counter_delta_32(const std::uint64_t current, const std::uint64_t previous) {
+  constexpr std::uint64_t modulus = 1ULL << 32U;
+  return current >= previous ? current - previous : modulus - previous + current;
 }
 
 std::string to_utf8(std::wstring_view value) {
@@ -234,8 +241,11 @@ std::unordered_map<ULONG, std::string> query_ipv4_addresses() {
       }
       const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->Address.lpSockaddr);
       std::array<char, INET_ADDRSTRLEN> text{};
-      if (InetNtopA(AF_INET, &ipv4->sin_addr, text.data(), static_cast<DWORD>(text.size())) != nullptr) {
-        addresses.emplace(adapter->IfIndex, text.data());
+      if (InetNtopA(AF_INET,
+                    &ipv4->sin_addr,
+                    text.data(),
+                    static_cast<DWORD>(text.size())) != nullptr) {
+        addresses[static_cast<ULONG>(adapter->IfIndex)] = std::string(text.data());
         break;
       }
     }
@@ -459,45 +469,57 @@ DynamicSystemInfo SystemMonitor::sample(bool refresh_slow_data) {
 
   const auto network_start = Clock::now();
   const auto ipv4_addresses = query_ipv4_addresses();
-  PMIB_IF_TABLE2 interface_table = nullptr;
   const auto network_now = Clock::now();
-  const double network_seconds = std::chrono::duration<double>(network_now - previous_network_sample_).count();
-  if (GetIfTable2(&interface_table) == NO_ERROR && interface_table != nullptr) {
-    result.network_adapters.reserve(interface_table->NumEntries);
-    for (ULONG index = 0; index < interface_table->NumEntries; ++index) {
-      const MIB_IF_ROW2& row = interface_table->Table[index];
-      if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) {
-        continue;
-      }
+  const double network_seconds =
+      std::chrono::duration<double>(network_now - previous_network_sample_).count();
 
-      NetworkAdapterInfo adapter{};
-      adapter.name = to_utf8(row.Alias);
-      adapter.description = to_utf8(row.Description);
-      adapter.connected = row.OperStatus == IfOperStatusUp;
-      adapter.received_bytes = row.InOctets;
-      adapter.sent_bytes = row.OutOctets;
-      const auto address = ipv4_addresses.find(row.InterfaceIndex);
-      if (address != ipv4_addresses.end()) {
-        adapter.ipv4_address = address->second;
-      }
+  ULONG table_size = 0;
+  if (GetIfTable(nullptr, &table_size, FALSE) == ERROR_INSUFFICIENT_BUFFER && table_size > 0) {
+    std::vector<unsigned char> table_buffer(table_size);
+    auto* interface_table = reinterpret_cast<MIB_IFTABLE*>(table_buffer.data());
+    if (GetIfTable(interface_table, &table_size, FALSE) == NO_ERROR) {
+      result.network_adapters.reserve(interface_table->dwNumEntries);
+      for (DWORD index = 0; index < interface_table->dwNumEntries; ++index) {
+        const MIB_IFROW& row = interface_table->table[index];
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
+          continue;
+        }
 
-      const std::uint64_t key = row.InterfaceLuid.Value;
-      const auto previous = previous_network_counters_.find(key);
-      if (previous != previous_network_counters_.end() && network_seconds > 0.0) {
-        if (adapter.received_bytes >= previous->second.received_bytes) {
+        NetworkAdapterInfo adapter{};
+        adapter.name = to_utf8(row.wszName);
+        const std::size_t description_length =
+            std::min<std::size_t>(static_cast<std::size_t>(row.dwDescrLen), sizeof(row.bDescr));
+        adapter.description.assign(reinterpret_cast<const char*>(row.bDescr), description_length);
+        while (!adapter.description.empty() && adapter.description.back() == '\0') {
+          adapter.description.pop_back();
+        }
+        adapter.connected = row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL;
+        adapter.received_bytes = static_cast<std::uint64_t>(row.dwInOctets);
+        adapter.sent_bytes = static_cast<std::uint64_t>(row.dwOutOctets);
+
+        const auto address = ipv4_addresses.find(row.dwIndex);
+        if (address != ipv4_addresses.end()) {
+          adapter.ipv4_address = address->second;
+        }
+
+        const std::uint64_t key = static_cast<std::uint64_t>(row.dwIndex);
+        const auto previous = previous_network_counters_.find(key);
+        if (previous != previous_network_counters_.end() && network_seconds > 0.0) {
           adapter.receive_bytes_per_second =
-              static_cast<double>(adapter.received_bytes - previous->second.received_bytes) / network_seconds;
-        }
-        if (adapter.sent_bytes >= previous->second.sent_bytes) {
+              static_cast<double>(counter_delta_32(adapter.received_bytes,
+                                                   previous->second.received_bytes)) /
+              network_seconds;
           adapter.send_bytes_per_second =
-              static_cast<double>(adapter.sent_bytes - previous->second.sent_bytes) / network_seconds;
+              static_cast<double>(counter_delta_32(adapter.sent_bytes,
+                                                   previous->second.sent_bytes)) /
+              network_seconds;
         }
+        previous_network_counters_[key] = {adapter.received_bytes, adapter.sent_bytes};
+        result.network_adapters.push_back(std::move(adapter));
       }
-      previous_network_counters_[key] = {adapter.received_bytes, adapter.sent_bytes};
-      result.network_adapters.push_back(std::move(adapter));
     }
-    FreeMibTable(interface_table);
   }
+
   previous_network_sample_ = network_now;
   std::sort(result.network_adapters.begin(),
             result.network_adapters.end(),
@@ -508,22 +530,19 @@ DynamicSystemInfo SystemMonitor::sample(bool refresh_slow_data) {
               return left.receive_bytes_per_second + left.send_bytes_per_second >
                      right.receive_bytes_per_second + right.send_bytes_per_second;
             });
-  const auto network_end = Clock::now();
-  result.collector_timings.network_ms = elapsed_ms(network_start, network_end);
+  result.collector_timings.network_ms = elapsed_ms(network_start, Clock::now());
 
   if (refresh_slow_data || cached_disks_.empty()) {
     result.collector_timings.slow_refresh_performed = true;
     const auto storage_start = Clock::now();
     cached_disks_ = query_disks();
-    const auto storage_end = Clock::now();
-    result.collector_timings.storage_ms = elapsed_ms(storage_start, storage_end);
+    result.collector_timings.storage_ms = elapsed_ms(storage_start, Clock::now());
 
     const auto processes_start = Clock::now();
     auto [processes, process_count] = query_processes();
     cached_processes_ = std::move(processes);
     cached_process_count_ = process_count;
-    const auto processes_end = Clock::now();
-    result.collector_timings.processes_ms = elapsed_ms(processes_start, processes_end);
+    result.collector_timings.processes_ms = elapsed_ms(processes_start, Clock::now());
   }
 #else
   const auto cpu_memory_start = Clock::now();
@@ -565,8 +584,7 @@ DynamicSystemInfo SystemMonitor::sample(bool refresh_slow_data) {
   if (uptime_file >> uptime) {
     result.uptime_seconds = static_cast<std::uint64_t>(uptime);
   }
-  const auto cpu_memory_end = Clock::now();
-  result.collector_timings.cpu_memory_ms = elapsed_ms(cpu_memory_start, cpu_memory_end);
+  result.collector_timings.cpu_memory_ms = elapsed_ms(cpu_memory_start, Clock::now());
 
   if (refresh_slow_data || cached_disks_.empty()) {
     result.collector_timings.slow_refresh_performed = true;
