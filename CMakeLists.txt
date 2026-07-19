@@ -26,7 +26,7 @@ FetchContent_MakeAvailable(SDL3)
 FetchContent_Declare(
   imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG v1.91.9
+  GIT_TAG v1.91.9-docking
   GIT_SHALLOW TRUE
 )
 FetchContent_GetProperties(imgui)
