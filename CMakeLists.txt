@@ -72,6 +72,8 @@ if(WIN32)
     WIN32_LEAN_AND_MEAN
     UNICODE
     _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
   )
   target_link_libraries(BlenderUIDemo PRIVATE advapi32 iphlpapi ws2_32)
 endif()
