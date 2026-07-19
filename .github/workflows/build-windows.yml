@@ -138,13 +138,12 @@ jobs:
           Copy-Item build/SDL3.dll package/
           Copy-Item README.md package/
           Copy-Item LICENSE package/
-          Compress-Archive -Path package/* -DestinationPath BlenderUIDemo-windows-x64.zip -Force
 
       - name: Upload artifact
         if: steps.compile.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: BlenderUIDemo-windows-x64
-          path: BlenderUIDemo-windows-x64.zip
+          path: package/
           if-no-files-found: error
           retention-days: 14
