@@ -26,7 +26,7 @@ FetchContent_MakeAvailable(SDL3)
 FetchContent_Declare(
   imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG v1.92.8
+  GIT_TAG v1.91.9
   GIT_SHALLOW TRUE
 )
 FetchContent_GetProperties(imgui)
@@ -52,7 +52,6 @@ target_include_directories(imgui PUBLIC
 )
 
 target_link_libraries(imgui PUBLIC SDL3::SDL3 OpenGL::GL)
-target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 
 add_executable(BlenderUIDemo
   src/main.cpp
