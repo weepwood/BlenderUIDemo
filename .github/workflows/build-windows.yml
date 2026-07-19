@@ -27,34 +27,18 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          $arguments = @(
-            '-S', '.',
-            '-B', 'build',
-            '-G', 'Ninja',
-            '-DCMAKE_BUILD_TYPE=Release',
-            '-DCMAKE_C_COMPILER=cl',
-            '-DCMAKE_CXX_COMPILER=cl',
-            '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
-            '-Wno-dev'
-          )
-          $process = Start-Process -FilePath cmake `
-            -ArgumentList $arguments `
-            -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput configure-output.log `
-            -RedirectStandardError configure-error.log
-          if ($process.ExitCode -ne 0) {
-            Write-Host "=== Configure error summary ==="
-            if (Test-Path configure-output.log) { Get-Content configure-output.log -Tail 40 }
-            if (Test-Path configure-error.log) { Get-Content configure-error.log -Tail 40 }
-            exit $process.ExitCode
-          }
+          $env:CC = 'cl'
+          $env:CXX = 'cl'
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -Wno-dev
 
           $cache = Get-Content build/CMakeCache.txt -Raw
           if ($cache -notmatch 'CMAKE_CXX_COMPILER:FILEPATH=.*cl\.exe') {
             Write-Error 'The Windows build did not select the MSVC compiler.'
             exit 1
           }
-          Get-Content configure-output.log -Tail 10
 
       - name: Build
         id: compile
