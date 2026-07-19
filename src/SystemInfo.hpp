@@ -7,6 +7,11 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <netioapi.h>
+#endif
+
 namespace blender_ui_demo {
 
 struct DiskInfo {
